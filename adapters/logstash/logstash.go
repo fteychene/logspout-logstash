@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net"
+	"fmt"
 
 	"github.com/gliderlabs/logspout/router"
 )
@@ -71,6 +72,7 @@ func (a *LogstashAdapter) Stream(logstream chan *router.Message) {
 				continue
 			}
 		}
+		fmt.Println("Sending: ", js)
 		_, err = a.conn.Write(js)
 		if err != nil {
 			log.Println("logstash:", err)
