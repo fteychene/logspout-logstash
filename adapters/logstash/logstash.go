@@ -4,9 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"net"
-	"fmt"
-
 	"github.com/gliderlabs/logspout/router"
 )
 
@@ -16,8 +13,8 @@ func init() {
 
 // LogstashAdapter is an adapter that streams UDP JSON to Logstash.
 type LogstashAdapter struct {
-	conn  net.Conn
 	route *router.Route
+	transport router.AdapterTransport
 }
 
 // NewLogstashAdapter creates a LogstashAdapter with UDP as the default transport.
@@ -27,14 +24,9 @@ func NewLogstashAdapter(route *router.Route) (router.LogAdapter, error) {
 		return nil, errors.New("unable to find adapter: " + route.Adapter)
 	}
 
-	conn, err := transport.Dial(route.Address, route.Options)
-	if err != nil {
-		return nil, err
-	}
-
 	return &LogstashAdapter{
 		route: route,
-		conn:  conn,
+		transport: transport,
 	}, nil
 }
 
@@ -72,8 +64,17 @@ func (a *LogstashAdapter) Stream(logstream chan *router.Message) {
 				continue
 			}
 		}
-		fmt.Println("Sending: ", js)
-		_, err = a.conn.Write(js)
+		conn, err := a.transport.Dial(a.route.Address, a.route.Options)
+		if err != nil {
+			log.Println("logstash:", err)
+			continue
+		}
+		_, err = conn.Write(js)
+		if err != nil {
+			log.Println("logstash:", err)
+			continue
+		}
+		err = conn.Close()
 		if err != nil {
 			log.Println("logstash:", err)
 			continue
