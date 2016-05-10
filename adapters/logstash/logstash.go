@@ -19,7 +19,7 @@ type LogstashAdapter struct {
 	route *router.Route
 }
 
-const collapseMessage map[string]LogstashMessage = make(map[DockerInfo]LogstashMessage)
+var collapseMessage map[string]LogstashMessage = make(map[string]LogstashMessage)
 
 // NewLogstashAdapter creates a LogstashAdapter with UDP as the default transport.
 func NewLogstashAdapter(route *router.Route) (router.LogAdapter, error) {
@@ -44,7 +44,7 @@ func (a *LogstashAdapter) TryCollapseMessage(message LogstashMessage, sendMessag
 		collapseMessage[message.Docker.ID] = message
 		return 0, nil
 	} else {
-		if value, present := collapseMessage[message.Docker.ID]; present != nil {
+		if value, present := collapseMessage[message.Docker.ID]; present {
 			message.Message = strings.Join([]string {value.Message, message.Message}, "\n")
 		}
 		return sendMessage(message)
@@ -60,35 +60,40 @@ func (a *LogstashAdapter) Stream(logstream chan *router.Message) {
 			Image:    m.Container.Config.Image,
 			Hostname: m.Container.Config.Hostname,
 		}
-		var js []byte
+		//var js []byte
 
-		var jsonMsg map[string]interface{}
-		err := json.Unmarshal([]byte(m.Data), &jsonMsg)
-		if err != nil {
-			// the message is not in JSON make a new JSON message
-			jsonMsg = LogstashMessage{
-				Message: m.Data,
-				Docker:  dockerInfo,
-			}
-			//js, err = json.Marshal(jsonMsg)
-			//if err != nil {
-			//	log.Println("logstash:", err)
-			//	continue
-			//}
-		} else {
-			// the message is already in JSON just add the docker specific fields as a nested structure
-			jsonMsg["docker"] = dockerInfo
-
-			//js, err = json.Marshal(jsonMsg)
-			//if err != nil {
-			//	log.Println("logstash:", err)
-			//	continue
-			//}
+		msg := LogstashMessage{
+			Message: m.Data,
+			Docker:  dockerInfo,
 		}
-		_, err = a.TryCollapseMessage(jsonMsg, func(message LogstashMessage) {
-			js, err = json.Marshal(jsonMsg)
+
+		//var jsonMsg map[string]interface{}
+		//err := json.Unmarshal([]byte(m.Data), &jsonMsg)
+		//if err != nil {
+		//	// the message is not in JSON make a new JSON message
+		//	jsonMsg = LogstashMessage{
+		//		Message: m.Data,
+		//		Docker:  dockerInfo,
+		//	}
+		//	//js, err = json.Marshal(jsonMsg)
+		//	//if err != nil {
+		//	//	log.Println("logstash:", err)
+		//	//	continue
+		//	//}
+		//} else {
+		//	// the message is already in JSON just add the docker specific fields as a nested structure
+		//	jsonMsg["docker"] = dockerInfo
+		//
+		//	//js, err = json.Marshal(jsonMsg)
+		//	//if err != nil {
+		//	//	log.Println("logstash:", err)
+		//	//	continue
+		//	//}
+		//}
+		_, err := a.TryCollapseMessage(msg, func(message LogstashMessage) (int, error) {
+			js, err := json.Marshal(message)
 			if err != nil {
-				return nil, err
+				return 0, err
 			}
 			return a.conn.Write(js)
 
