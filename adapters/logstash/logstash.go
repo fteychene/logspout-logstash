@@ -5,7 +5,7 @@ import (
 	"errors"
 	"log"
 	"net"
-
+	"strings"
 	"github.com/gliderlabs/logspout/router"
 )
 
@@ -18,6 +18,8 @@ type LogstashAdapter struct {
 	conn  net.Conn
 	route *router.Route
 }
+
+const collapseMessage map[string]LogstashMessage = make(map[DockerInfo]LogstashMessage)
 
 // NewLogstashAdapter creates a LogstashAdapter with UDP as the default transport.
 func NewLogstashAdapter(route *router.Route) (router.LogAdapter, error) {
@@ -37,6 +39,18 @@ func NewLogstashAdapter(route *router.Route) (router.LogAdapter, error) {
 	}, nil
 }
 
+func (a *LogstashAdapter) TryCollapseMessage(message LogstashMessage, sendMessage func(message LogstashMessage)(int, error)) (int, error) {
+	if strings.Contains(message.Message, "Exception:") {
+		collapseMessage[message.Docker.ID] = message
+		return 0, nil
+	} else {
+		if value, present := collapseMessage[message.Docker.ID]; present != nil {
+			message.Message = strings.Join([]string {value.Message, message.Message}, "\n")
+		}
+		return sendMessage(message)
+	}
+}
+
 // Stream implements the router.LogAdapter interface.
 func (a *LogstashAdapter) Stream(logstream chan *router.Message) {
 	for m := range logstream {
@@ -52,26 +66,34 @@ func (a *LogstashAdapter) Stream(logstream chan *router.Message) {
 		err := json.Unmarshal([]byte(m.Data), &jsonMsg)
 		if err != nil {
 			// the message is not in JSON make a new JSON message
-			msg := LogstashMessage{
+			jsonMsg = LogstashMessage{
 				Message: m.Data,
 				Docker:  dockerInfo,
 			}
-			js, err = json.Marshal(msg)
-			if err != nil {
-				log.Println("logstash:", err)
-				continue
-			}
+			//js, err = json.Marshal(jsonMsg)
+			//if err != nil {
+			//	log.Println("logstash:", err)
+			//	continue
+			//}
 		} else {
 			// the message is already in JSON just add the docker specific fields as a nested structure
 			jsonMsg["docker"] = dockerInfo
 
+			//js, err = json.Marshal(jsonMsg)
+			//if err != nil {
+			//	log.Println("logstash:", err)
+			//	continue
+			//}
+		}
+		_, err = a.TryCollapseMessage(jsonMsg, func(message LogstashMessage) {
 			js, err = json.Marshal(jsonMsg)
 			if err != nil {
-				log.Println("logstash:", err)
-				continue
+				return nil, err
 			}
-		}
-		_, err = a.conn.Write(js)
+			return a.conn.Write(js)
+
+		})
+		//_, err = a.conn.Write(js)
 		if err != nil {
 			log.Println("logstash:", err)
 			continue
