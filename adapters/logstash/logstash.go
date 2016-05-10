@@ -40,15 +40,23 @@ func NewLogstashAdapter(route *router.Route) (router.LogAdapter, error) {
 }
 
 func (a *LogstashAdapter) TryCollapseMessage(message LogstashMessage, sendMessage func(message LogstashMessage)(int, error)) (int, error) {
+	var messageToSend *LogstashMessage = nil
 	if strings.Contains(message.Message, "Exception:") {
+		if value, present := collapseMessage[message.Docker.ID]; present {
+			messageToSend = &value
+		}
 		collapseMessage[message.Docker.ID] = message
-		return 0, nil
 	} else {
 		if value, present := collapseMessage[message.Docker.ID]; present {
 			message.Message = strings.Join([]string {value.Message, message.Message}, "\n")
+			delete(collapseMessage, message.Docker.ID)
 		}
-		return sendMessage(message)
+		messageToSend = &message
 	}
+	if messageToSend == nil {
+		return 0, nil
+	}
+	return sendMessage(*messageToSend)
 }
 
 // Stream implements the router.LogAdapter interface.
