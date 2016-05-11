@@ -61,6 +61,7 @@ func (a *LogstashAdapter) collapseIfNeeded(message LogstashMessage, sendMessage 
 					case <-time.After(time.Millisecond * 200):
 						sendMessage(data)
 						delete(collapseMessage, message.Docker.ID)
+						receive = false
 					}
 				}
 			}(channel, message)
