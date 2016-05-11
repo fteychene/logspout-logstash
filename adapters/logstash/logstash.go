@@ -8,6 +8,7 @@ import (
 	"net"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/gliderlabs/logspout/router"
 )
@@ -25,7 +26,7 @@ type LogstashAdapter struct {
 var javaExceptionPattern = regexp.MustCompile("(^.+Exception: .+)|(^\\s+at .+)|(^\\s+... \\d+ more)|(^\\s*Caused by:.+)")
 
 var lastMessage = make(map[string]LogstashMessage)
-var collapseMessage = make(map[string]LogstashMessage)
+var collapseMessage = make(map[string]chan LogstashMessage)
 
 // NewLogstashAdapter creates a LogstashAdapter with UDP as the default transport.
 func NewLogstashAdapter(route *router.Route) (router.LogAdapter, error) {
@@ -47,17 +48,26 @@ func NewLogstashAdapter(route *router.Route) (router.LogAdapter, error) {
 
 func (a *LogstashAdapter) collapseIfNeeded(message LogstashMessage, sendMessage func(message LogstashMessage)) {
 	if javaExceptionPattern.MatchString(message.Message) {
-		if value, present := collapseMessage[message.Docker.ID]; present {
-			value.Message = strings.Join([]string{value.Message, message.Message}, "\n")
+		if _, present := collapseMessage[message.Docker.ID]; !present {
+			channel := make(chan LogstashMessage)
+			collapseMessage[message.Docker.ID] = channel
+			go func(channel chan LogstashMessage, message LogstashMessage) {
+				receive := true
+				data := message
+				for receive == true {
+					select {
+					case followingMessage := <-channel:
+						data.Message = strings.Join([]string{data.Message, followingMessage.Message}, "\n")
+					case <-time.After(time.Millisecond * 200):
+						sendMessage(data)
+						delete(collapseMessage, message.Docker.ID)
+					}
+				}
+			}(channel, message)
 		} else {
-			collapseMessage[message.Docker.ID] = message
+			collapseMessage[message.Docker.ID] <- message
 		}
 	} else {
-		if value, present := collapseMessage[message.Docker.ID]; present {
-			sendMessage(value)
-			// message.Message = strings.Join([]string{value.Message, message.Message}, "\n")
-			delete(collapseMessage, message.Docker.ID)
-		}
 		sendMessage(message)
 	}
 }
