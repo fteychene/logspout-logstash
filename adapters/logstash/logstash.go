@@ -5,7 +5,9 @@ import (
 	"errors"
 	"log"
 	"net"
+	"regexp"
 	"strings"
+
 	"github.com/gliderlabs/logspout/router"
 )
 
@@ -19,7 +21,10 @@ type LogstashAdapter struct {
 	route *router.Route
 }
 
-var collapseMessage map[string]LogstashMessage = make(map[string]LogstashMessage)
+var javaExceptionPattern = regexp.MustCompile("(^.+Exception: .+)|(^\\s+at .+)|(^\\s+... \\d+ more)|(^\\s*Caused by:.+)")
+
+var lastMessage = make(map[string]LogstashMessage)
+var collapseMessage = make(map[string]LogstashMessage)
 
 // NewLogstashAdapter creates a LogstashAdapter with UDP as the default transport.
 func NewLogstashAdapter(route *router.Route) (router.LogAdapter, error) {
@@ -39,24 +44,21 @@ func NewLogstashAdapter(route *router.Route) (router.LogAdapter, error) {
 	}, nil
 }
 
-func (a *LogstashAdapter) TryCollapseMessage(message LogstashMessage, sendMessage func(message LogstashMessage)(int, error)) (int, error) {
-	var messageToSend *LogstashMessage = nil
-	if strings.Contains(message.Message, "Exception:") {
+func (a *LogstashAdapter) collapseIfNeeded(message LogstashMessage, sendMessage func(message LogstashMessage)) {
+	if javaExceptionPattern.MatchString(message.Message) {
 		if value, present := collapseMessage[message.Docker.ID]; present {
-			messageToSend = &value
+			value.Message = strings.Join([]string{value.Message, message.Message}, "\n")
+		} else {
+			collapseMessage[message.Docker.ID] = message
 		}
-		collapseMessage[message.Docker.ID] = message
 	} else {
 		if value, present := collapseMessage[message.Docker.ID]; present {
-			message.Message = strings.Join([]string {value.Message, message.Message}, "\n")
+			sendMessage(value)
+			// message.Message = strings.Join([]string{value.Message, message.Message}, "\n")
 			delete(collapseMessage, message.Docker.ID)
 		}
-		messageToSend = &message
+		sendMessage(message)
 	}
-	if messageToSend == nil {
-		return 0, nil
-	}
-	return sendMessage(*messageToSend)
 }
 
 // Stream implements the router.LogAdapter interface.
@@ -68,52 +70,31 @@ func (a *LogstashAdapter) Stream(logstream chan *router.Message) {
 			Image:    m.Container.Config.Image,
 			Hostname: m.Container.Config.Hostname,
 		}
-		//var js []byte
-
 		msg := LogstashMessage{
 			Message: m.Data,
 			Docker:  dockerInfo,
 		}
 
-		//var jsonMsg map[string]interface{}
-		//err := json.Unmarshal([]byte(m.Data), &jsonMsg)
-		//if err != nil {
-		//	// the message is not in JSON make a new JSON message
-		//	jsonMsg = LogstashMessage{
-		//		Message: m.Data,
-		//		Docker:  dockerInfo,
-		//	}
-		//	//js, err = json.Marshal(jsonMsg)
-		//	//if err != nil {
-		//	//	log.Println("logstash:", err)
-		//	//	continue
-		//	//}
-		//} else {
-		//	// the message is already in JSON just add the docker specific fields as a nested structure
-		//	jsonMsg["docker"] = dockerInfo
-		//
-		//	//js, err = json.Marshal(jsonMsg)
-		//	//if err != nil {
-		//	//	log.Println("logstash:", err)
-		//	//	continue
-		//	//}
-		//}
-		_, err := a.TryCollapseMessage(msg, func(message LogstashMessage) (int, error) {
+		var jsonMsg map[string]interface{}
+		err := json.Unmarshal([]byte(m.Data), &jsonMsg)
+		if err == nil {
+			msg.MessageInfo = jsonMsg
+		}
+
+		a.collapseIfNeeded(msg, func(message LogstashMessage) {
 			js, err := json.Marshal(message)
 			if err != nil {
-				return 0, err
+				log.Println("logstash:", err)
 			}
-			return a.conn.Write(js)
-
+			_, err = a.conn.Write(js)
+			if err != nil {
+				log.Println("logstash:", err)
+			}
 		})
-		//_, err = a.conn.Write(js)
-		if err != nil {
-			log.Println("logstash:", err)
-			continue
-		}
 	}
 }
 
+// DockerInfo : informations embbeded in message to logstash
 type DockerInfo struct {
 	Name     string `json:"name"`
 	ID       string `json:"id"`
@@ -123,6 +104,7 @@ type DockerInfo struct {
 
 // LogstashMessage is a simple JSON input to Logstash.
 type LogstashMessage struct {
-	Message string     `json:"message"`
-	Docker  DockerInfo `json:"docker"`
+	Message     string                 `json:"message"`
+	MessageInfo map[string]interface{} `json:"messageInfo"`
+	Docker      DockerInfo             `json:"docker"`
 }
