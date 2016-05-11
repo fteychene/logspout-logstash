@@ -3,6 +3,7 @@ package logstash
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"regexp"
@@ -80,6 +81,8 @@ func (a *LogstashAdapter) Stream(logstream chan *router.Message) {
 		if err == nil {
 			msg.MessageInfo = jsonMsg
 		}
+
+		fmt.Println("Send ", msg.Message)
 
 		a.collapseIfNeeded(msg, func(message LogstashMessage) {
 			js, err := json.Marshal(message)
