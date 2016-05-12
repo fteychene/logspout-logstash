@@ -84,6 +84,7 @@ func (a *LogstashAdapter) Stream(logstream chan *router.Message) {
 		}
 		msg := LogstashMessage{
 			Message: m.Data,
+			Time:    m.Time,
 			Docker:  dockerInfo,
 		}
 
@@ -116,9 +117,10 @@ type DockerInfo struct {
 	Hostname string `json:"hostname"`
 }
 
-// LogstashMessage is a simple JSON input to Logstash.
+// LogstashMessage is a simple JSON input to Logstash
 type LogstashMessage struct {
 	Message     string                 `json:"message"`
+	Time        time.Time              `json:"time"`
 	MessageInfo map[string]interface{} `json:"messageInfo"`
 	Docker      DockerInfo             `json:"docker"`
 }
