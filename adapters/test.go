@@ -16,16 +16,22 @@ func main() {
 	fmt.Println(pattern.MatchString("        ... 1 more"))
 	fmt.Println(pattern.MatchString("Coucou"))
 
-	c := make(chan string, 1)
+	c := make(chan string)
 	go func() {
 		receive := true
 		data := "Receive :"
 		for receive == true {
 			select {
-			case res := <-c:
-				fmt.Println("Receive data ", res)
-				data = strings.Join([]string{data, res}, "\n")
+			case res, more := <-c:
+				if more {
+					fmt.Println("Receive data ", res)
+					data = strings.Join([]string{data, res}, "\n")
+				} else {
+					fmt.Println("Closed channel")
+					receive = false
+				}
 			case <-time.After(time.Second * 2):
+				fmt.Println("Timeout channel")
 				receive = false
 			}
 		}
@@ -39,4 +45,6 @@ func main() {
 	c <- "result 4"
 	c <- "result 5"
 	time.Sleep(time.Second * 3)
+	close(c)
+	time.Sleep(time.Second * 2)
 }

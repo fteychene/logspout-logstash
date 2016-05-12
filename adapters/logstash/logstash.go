@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"regexp"
 	"strings"
 	"time"
@@ -19,8 +18,8 @@ func init() {
 
 // LogstashAdapter is an adapter that streams UDP JSON to Logstash.
 type LogstashAdapter struct {
-	conn  net.Conn
-	route *router.Route
+	transport router.AdapterTransport
+	route     *router.Route
 }
 
 var javaExceptionPattern = regexp.MustCompile("(^.+Exception: .+)|(^\\s+at .+)|(^\\s+... \\d+ more)|(^\\s*Caused by:.+)")
@@ -37,31 +36,52 @@ func NewLogstashAdapter(route *router.Route) (router.LogAdapter, error) {
 	}
 
 	conn, err := transport.Dial(route.Address, route.Options)
+	for err != nil {
+		fmt.Println("Unable to reach " + route.Address + " retryin in 2 sec")
+		time.Sleep(time.Second * 2)
+		conn, err = transport.Dial(route.Address, route.Options)
+	}
+
+	fmt.Println("Successfully connected to " + route.Adapter)
+	err = conn.Close()
 	if err != nil {
-		return nil, err
+		log.Println("Error closing initial connection", err)
 	}
 
 	return &LogstashAdapter{
-		route: route,
-		conn:  conn,
+		route:     route,
+		transport: transport,
 	}, nil
 }
 
-func runCollapseChannel(channel chan LogstashMessage, message LogstashMessage, sendMessage func(message LogstashMessage)) {
-	data := message
+func runCollapseChannel(channel chan LogstashMessage, sendMessage func(message LogstashMessage)) {
+	var collapse *LogstashMessage
 	timeout := time.After(time.Second * 1)
 	for {
 		select {
-		case followingMessage := <-channel:
-			if followingMessage.Type == data.Type {
-				data.Message = strings.Join([]string{data.Message, followingMessage.Message}, "\n")
-			} else {
-				go sendMessage(data)
-				data = followingMessage
-				timeout = time.After(time.Second * 1)
+		case log := <-channel:
+			switch {
+			case log.Type == "log":
+				if collapse != nil {
+					sendMessage(*collapse)
+					collapse = nil
+				}
+				sendMessage(log)
+			case collapse != nil && log.Type == (*collapse).Type:
+				(*collapse).Message = strings.Join([]string{(*collapse).Message, log.Message}, "\n")
+			case collapse == nil || log.Type != (*collapse).Type:
+				if collapse != nil {
+					sendMessage(*collapse)
+				}
+				collapse = &log
+
 			}
+			timeout = time.After(time.Second * 1)
 		case <-timeout:
-			sendMessage(data)
+			if collapse != nil {
+				sendMessage(*collapse)
+				collapse = nil
+			}
 		}
 	}
 }
@@ -70,7 +90,7 @@ func (a *LogstashAdapter) collapseIfNeeded(message LogstashMessage, sendMessage 
 	if _, present := collapseMessage[message.Docker.ID]; !present {
 		channel := make(chan LogstashMessage)
 		collapseMessage[message.Docker.ID] = channel
-		go runCollapseChannel(channel, message, sendMessage)
+		go runCollapseChannel(channel, sendMessage)
 	}
 	switch {
 	//  Java exception
@@ -93,10 +113,10 @@ func (a *LogstashAdapter) Stream(logstream chan *router.Message) {
 			Hostname: m.Container.Config.Hostname,
 		}
 		msg := LogstashMessage{
-			Message: m.Data,
-			Time:    m.Time,
-			Type:    "log",
-			Docker:  dockerInfo,
+			Message:  m.Data,
+			EvenTime: m.Time,
+			Type:     "log",
+			Docker:   dockerInfo,
 		}
 
 		var jsonMsg map[string]interface{}
@@ -109,10 +129,15 @@ func (a *LogstashAdapter) Stream(logstream chan *router.Message) {
 
 		a.collapseIfNeeded(msg, func(message LogstashMessage) {
 			js, err := json.Marshal(message)
+			conn, err := a.transport.Dial(a.route.Address, a.route.Options)
 			if err != nil {
 				log.Println("logstash:", err)
 			}
-			_, err = a.conn.Write(js)
+			_, err = conn.Write(js)
+			if err != nil {
+				log.Println("logstash:", err)
+			}
+			err = conn.Close()
 			if err != nil {
 				log.Println("logstash:", err)
 			}
@@ -131,7 +156,7 @@ type DockerInfo struct {
 // LogstashMessage is a simple JSON input to Logstash
 type LogstashMessage struct {
 	Message     string                 `json:"message"`
-	Time        time.Time              `json:"time"`
+	EvenTime    time.Time              `json:"eventTime"`
 	MessageInfo map[string]interface{} `json:"messageInfo"`
 	Docker      DockerInfo             `json:"docker"`
 	Type        string                 `json:"type"`
