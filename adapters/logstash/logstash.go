@@ -24,6 +24,7 @@ type LogstashAdapter struct {
 }
 
 var javaExceptionPattern = regexp.MustCompile("(^.+Exception: .+)|(^\\s+at .+)|(^\\s+... \\d+ more)|(^\\s*Caused by:.+)")
+var clojureExceptionPattern = regexp.MustCompile("^.+#error {|^\\s+:cause .+|^\\s+:via$|:type |:message |:at |^\\s+:trace$|^\\s+\\[?\\[.+\\]\\]?}?$")
 
 var lastMessage = make(map[string]LogstashMessage)
 var collapseMessage = make(map[string]chan LogstashMessage)
@@ -46,30 +47,47 @@ func NewLogstashAdapter(route *router.Route) (router.LogAdapter, error) {
 	}, nil
 }
 
+func runCollapseChannel(channel chan LogstashMessage, message LogstashMessage, sendMessage func(message LogstashMessage)) {
+	data := message
+	finish := false
+	for finish == false {
+		select {
+		case followingMessage, more := <-channel:
+			if more {
+				if followingMessage.Type == data.Type {
+					data.Message = strings.Join([]string{data.Message, followingMessage.Message}, "\n")
+				} else {
+					sendMessage(data)
+					data = followingMessage
+				}
+			} else {
+				sendMessage(data)
+				delete(collapseMessage, message.Docker.ID)
+				finish = true
+			}
+		case <-time.After(time.Millisecond * 200):
+			fmt.Println("Warning : Collapsing timeout before ending, some part of the message could be lost")
+			close(channel)
+		}
+	}
+}
+
 func (a *LogstashAdapter) collapseIfNeeded(message LogstashMessage, sendMessage func(message LogstashMessage)) {
 	if javaExceptionPattern.MatchString(message.Message) {
+		message.Type = "java-exception"
 		if _, present := collapseMessage[message.Docker.ID]; !present {
 			channel := make(chan LogstashMessage)
 			collapseMessage[message.Docker.ID] = channel
-			go func(channel chan LogstashMessage, message LogstashMessage) {
-				data := message
-				finish := false
-				for finish == false {
-					select {
-					case followingMessage, more := <-channel:
-						if more {
-							data.Message = strings.Join([]string{data.Message, followingMessage.Message}, "\n")
-						} else {
-							sendMessage(data)
-							delete(collapseMessage, message.Docker.ID)
-							finish = true
-						}
-					case <-time.After(time.Millisecond * 200):
-						fmt.Println("Warning : Collapsing timeout before ending, some part of the message could be lost")
-						close(channel)
-					}
-				}
-			}(channel, message)
+			go runCollapseChannel(channel, message, sendMessage)
+		} else {
+			collapseMessage[message.Docker.ID] <- message
+		}
+	} else if clojureExceptionPattern.MatchString(message.Message) {
+		message.Type = "clojure-exception"
+		if _, present := collapseMessage[message.Docker.ID]; !present {
+			channel := make(chan LogstashMessage)
+			collapseMessage[message.Docker.ID] = channel
+			go runCollapseChannel(channel, message, sendMessage)
 		} else {
 			collapseMessage[message.Docker.ID] <- message
 		}
@@ -93,6 +111,7 @@ func (a *LogstashAdapter) Stream(logstream chan *router.Message) {
 		msg := LogstashMessage{
 			Message: m.Data,
 			Time:    m.Time,
+			Type:    "log",
 			Docker:  dockerInfo,
 		}
 
@@ -131,4 +150,5 @@ type LogstashMessage struct {
 	Time        time.Time              `json:"time"`
 	MessageInfo map[string]interface{} `json:"messageInfo"`
 	Docker      DockerInfo             `json:"docker"`
+	Type        string                 `json:"type"`
 }
