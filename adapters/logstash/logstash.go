@@ -49,54 +49,38 @@ func NewLogstashAdapter(route *router.Route) (router.LogAdapter, error) {
 
 func runCollapseChannel(channel chan LogstashMessage, message LogstashMessage, sendMessage func(message LogstashMessage)) {
 	data := message
-	finish := false
-	for finish == false {
+	timeout := time.After(time.Second * 1)
+	for {
 		select {
-		case followingMessage, more := <-channel:
-			if more {
-				if followingMessage.Type == data.Type {
-					data.Message = strings.Join([]string{data.Message, followingMessage.Message}, "\n")
-				} else {
-					sendMessage(data)
-					data = followingMessage
-				}
+		case followingMessage := <-channel:
+			if followingMessage.Type == data.Type {
+				data.Message = strings.Join([]string{data.Message, followingMessage.Message}, "\n")
 			} else {
-				sendMessage(data)
-				delete(collapseMessage, message.Docker.ID)
-				finish = true
+				go sendMessage(data)
+				data = followingMessage
+				timeout = time.After(time.Second * 1)
 			}
-		case <-time.After(time.Millisecond * 200):
-			fmt.Println("Warning : Collapsing timeout before ending, some part of the message could be lost")
-			close(channel)
+		case <-timeout:
+			sendMessage(data)
 		}
 	}
 }
 
 func (a *LogstashAdapter) collapseIfNeeded(message LogstashMessage, sendMessage func(message LogstashMessage)) {
-	if javaExceptionPattern.MatchString(message.Message) {
-		message.Type = "java-exception"
-		if _, present := collapseMessage[message.Docker.ID]; !present {
-			channel := make(chan LogstashMessage)
-			collapseMessage[message.Docker.ID] = channel
-			go runCollapseChannel(channel, message, sendMessage)
-		} else {
-			collapseMessage[message.Docker.ID] <- message
-		}
-	} else if clojureExceptionPattern.MatchString(message.Message) {
-		message.Type = "clojure-exception"
-		if _, present := collapseMessage[message.Docker.ID]; !present {
-			channel := make(chan LogstashMessage)
-			collapseMessage[message.Docker.ID] = channel
-			go runCollapseChannel(channel, message, sendMessage)
-		} else {
-			collapseMessage[message.Docker.ID] <- message
-		}
-	} else {
-		if _, present := collapseMessage[message.Docker.ID]; present {
-			close(collapseMessage[message.Docker.ID])
-		}
-		sendMessage(message)
+	if _, present := collapseMessage[message.Docker.ID]; !present {
+		channel := make(chan LogstashMessage)
+		collapseMessage[message.Docker.ID] = channel
+		go runCollapseChannel(channel, message, sendMessage)
 	}
+	switch {
+	//  Java exception
+	case javaExceptionPattern.MatchString(message.Message):
+		message.Type = "java-exception"
+	// Clojure exception
+	case clojureExceptionPattern.MatchString(message.Message):
+		message.Type = "clojure-exception"
+	}
+	collapseMessage[message.Docker.ID] <- message
 }
 
 // Stream implements the router.LogAdapter interface.
