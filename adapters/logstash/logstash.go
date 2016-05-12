@@ -52,16 +52,21 @@ func (a *LogstashAdapter) collapseIfNeeded(message LogstashMessage, sendMessage 
 			channel := make(chan LogstashMessage)
 			collapseMessage[message.Docker.ID] = channel
 			go func(channel chan LogstashMessage, message LogstashMessage) {
-				receive := true
 				data := message
-				for receive == true {
+				finish := false
+				for finish == false {
 					select {
-					case followingMessage := <-channel:
-						data.Message = strings.Join([]string{data.Message, followingMessage.Message}, "\n")
+					case followingMessage, more := <-channel:
+						if more {
+							data.Message = strings.Join([]string{data.Message, followingMessage.Message}, "\n")
+						} else {
+							sendMessage(data)
+							delete(collapseMessage, message.Docker.ID)
+							finish = true
+						}
 					case <-time.After(time.Millisecond * 200):
-						sendMessage(data)
-						delete(collapseMessage, message.Docker.ID)
-						receive = false
+						fmt.Println("Warning : Collapsing timeout before ending, some part of the message could be lost")
+						close(channel)
 					}
 				}
 			}(channel, message)
@@ -69,6 +74,9 @@ func (a *LogstashAdapter) collapseIfNeeded(message LogstashMessage, sendMessage 
 			collapseMessage[message.Docker.ID] <- message
 		}
 	} else {
+		if _, present := collapseMessage[message.Docker.ID]; present {
+			close(collapseMessage[message.Docker.ID])
+		}
 		sendMessage(message)
 	}
 }
