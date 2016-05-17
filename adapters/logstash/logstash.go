@@ -103,43 +103,47 @@ func (a *LogstashAdapter) collapseIfNeeded(message LogstashMessage, sendMessage 
 	collapseMessage[message.Docker.ID] <- message
 }
 
+func (a *LogstashAdapter) processMessage(m *router.Message) {
+	dockerInfo := DockerInfo{
+		Name:     m.Container.Name,
+		ID:       m.Container.ID,
+		Image:    m.Container.Config.Image,
+		Hostname: m.Container.Config.Hostname,
+	}
+	msg := LogstashMessage{
+		Message:  m.Data,
+		EvenTime: m.Time,
+		Type:     "log",
+		Docker:   dockerInfo,
+	}
+
+	var jsonMsg map[string]interface{}
+	err := json.Unmarshal([]byte(m.Data), &jsonMsg)
+	if err == nil {
+		msg.MessageInfo = jsonMsg
+	}
+
+	a.collapseIfNeeded(msg, func(message LogstashMessage) {
+		js, err := json.Marshal(message)
+		conn, err := a.transport.Dial(a.route.Address, a.route.Options)
+		if err != nil {
+			log.Println("logstash:", err)
+		}
+		_, err = conn.Write(js)
+		if err != nil {
+			log.Println("logstash:", err)
+		}
+		err = conn.Close()
+		if err != nil {
+			log.Println("logstash:", err)
+		}
+	})
+}
+
 // Stream implements the router.LogAdapter interface.
 func (a *LogstashAdapter) Stream(logstream chan *router.Message) {
 	for m := range logstream {
-		dockerInfo := DockerInfo{
-			Name:     m.Container.Name,
-			ID:       m.Container.ID,
-			Image:    m.Container.Config.Image,
-			Hostname: m.Container.Config.Hostname,
-		}
-		msg := LogstashMessage{
-			Message:  m.Data,
-			EvenTime: m.Time,
-			Type:     "log",
-			Docker:   dockerInfo,
-		}
-
-		var jsonMsg map[string]interface{}
-		err := json.Unmarshal([]byte(m.Data), &jsonMsg)
-		if err == nil {
-			msg.MessageInfo = jsonMsg
-		}
-
-		a.collapseIfNeeded(msg, func(message LogstashMessage) {
-			js, err := json.Marshal(message)
-			conn, err := a.transport.Dial(a.route.Address, a.route.Options)
-			if err != nil {
-				log.Println("logstash:", err)
-			}
-			_, err = conn.Write(js)
-			if err != nil {
-				log.Println("logstash:", err)
-			}
-			err = conn.Close()
-			if err != nil {
-				log.Println("logstash:", err)
-			}
-		})
+		go a.processMessage(m)
 	}
 }
 
