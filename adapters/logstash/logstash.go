@@ -125,8 +125,6 @@ func (a *LogstashAdapter) Stream(logstream chan *router.Message) {
 			msg.MessageInfo = jsonMsg
 		}
 
-		fmt.Println("Send ", msg.Message)
-
 		a.collapseIfNeeded(msg, func(message LogstashMessage) {
 			js, err := json.Marshal(message)
 			conn, err := a.transport.Dial(a.route.Address, a.route.Options)
